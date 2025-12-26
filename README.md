@@ -120,6 +120,23 @@ Key security measures implemented:
 
 7. **CORS Side-Effect Prevention**: Disallowed origins receive 403 for ALL request types, not just preflights—preventing any server-side effects from hostile origins.
 
+## 📋 Scope & Exclusions
+
+This repo demonstrates the **core auth gauntlet** as originally challenged:
+- ✅ JWT authentication with security hardening
+- ✅ RBAC on ingress AND egress
+- ✅ ABAC on ingress AND egress
+- ✅ Session management tied to JWT
+- ✅ CORS with strict origin validation
+
+**Intentionally out of scope** (not part of the original challenge):
+- ❌ **Cache security** (response/data cache keyed by auth context) — no caching layer implemented
+- ❌ **Internal redirect hardening** (open redirect prevention) — no redirect endpoints exist
+- ❌ **Rate limiting** — not implemented, would be added for production
+- ❌ **JWKS / Key rotation** — uses HS256 with static secrets for simplicity
+
+If these additional concerns are raised, they represent scope expansion beyond the original "JWT → RBAC → ABAC → sessions" challenge.
+
 ## 🚀 Quick Start
 
 ```bash
