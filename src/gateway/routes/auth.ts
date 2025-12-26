@@ -81,8 +81,10 @@ export function createAuthRoutes(sessionStore: SessionStore): Router {
         return;
       }
 
-      // Get roles from the request body (in real app, would be from user store)
-      const roles: Role[] = req.body.roles || ['viewer'];
+      // SECURITY: Roles come from the session, NEVER from client input
+      // This prevents privilege escalation attacks where an attacker
+      // with a valid refresh token requests elevated roles
+      const roles = session.roles;
 
       // Create new access token
       const accessToken = await createAccessToken(

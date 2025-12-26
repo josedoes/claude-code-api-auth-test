@@ -80,7 +80,8 @@ async function createSessionAndToken(
   roles: readonly string[],
   ttlMs: number = 3600000
 ): Promise<{ token: string; sessionId: string; refreshToken: string }> {
-  const { session, refreshToken } = await sessionStore.create(userId, ttlMs);
+  // Roles are now stored in the session - this prevents privilege escalation
+  const { session, refreshToken } = await sessionStore.create(userId, roles as any, ttlMs);
   const token = await createTestToken({
     sub: userId,
     roles: roles as any,
@@ -133,7 +134,7 @@ describe('B) JWT Authentication (Ingress)', () => {
   });
 
   test('5. Wrong issuer returns 401', async () => {
-    const { session } = await sessionStore.create('userA', 3600000);
+    const { session } = await sessionStore.create('userA', ['viewer'], 3600000);
     const token = await createTestToken({
       sub: 'userA',
       roles: ['viewer'],
@@ -147,7 +148,7 @@ describe('B) JWT Authentication (Ingress)', () => {
   });
 
   test('6. Wrong audience returns 401', async () => {
-    const { session } = await sessionStore.create('userA', 3600000);
+    const { session } = await sessionStore.create('userA', ['viewer'], 3600000);
     const token = await createTestToken({
       sub: 'userA',
       roles: ['viewer'],
@@ -425,9 +426,10 @@ describe('G) Session Management', () => {
     test('27. Valid refresh token returns new tokens', async () => {
       const { refreshToken } = await createSessionAndToken('userA', ['editor']);
 
+      // Note: roles are NOT sent - they come from the session
       const res = await request(gatewayApp)
         .post('/auth/refresh')
-        .send({ refreshToken, roles: ['editor'] });
+        .send({ refreshToken });
 
       expect(res.status).toBe(200);
       expect(res.body.accessToken).toBeDefined();
@@ -441,20 +443,20 @@ describe('G) Session Management', () => {
       // First use - should succeed
       const res1 = await request(gatewayApp)
         .post('/auth/refresh')
-        .send({ refreshToken, roles: ['editor'] });
+        .send({ refreshToken });
       expect(res1.status).toBe(200);
 
       // Second use - should fail
       const res2 = await request(gatewayApp)
         .post('/auth/refresh')
-        .send({ refreshToken, roles: ['editor'] });
+        .send({ refreshToken });
       expect(res2.status).toBe(401);
     });
 
     test('29. Invalid refresh token rejected', async () => {
       const res = await request(gatewayApp)
         .post('/auth/refresh')
-        .send({ refreshToken: 'invalid-token', roles: ['editor'] });
+        .send({ refreshToken: 'invalid-token' });
 
       expect(res.status).toBe(401);
     });
@@ -483,7 +485,7 @@ describe('G) Session Management', () => {
       // Try to refresh
       const res = await request(gatewayApp)
         .post('/auth/refresh')
-        .send({ refreshToken, roles: ['editor'] });
+        .send({ refreshToken });
 
       expect(res.status).toBe(401);
     });
@@ -531,7 +533,7 @@ describe('G) Session Management', () => {
   describe('Session TTL', () => {
     test('34. Session expires before JWT - request fails', async () => {
       // Create session with 5 second TTL, but JWT has 1 hour exp
-      const { session, refreshToken } = await sessionStore.create('userA', 5000);
+      const { session, refreshToken } = await sessionStore.create('userA', ['editor'], 5000);
 
       const token = await createTestToken({
         sub: 'userA',
@@ -561,10 +563,10 @@ describe('G) Session Management', () => {
       const [res1, res2] = await Promise.all([
         request(gatewayApp)
           .post('/auth/refresh')
-          .send({ refreshToken, roles: ['editor'] }),
+          .send({ refreshToken }),
         request(gatewayApp)
           .post('/auth/refresh')
-          .send({ refreshToken, roles: ['editor'] }),
+          .send({ refreshToken }),
       ]);
 
       const successCount = [res1, res2].filter(r => r.status === 200).length;
@@ -574,6 +576,55 @@ describe('G) Session Management', () => {
       expect(failCount).toBe(1);
     });
   });
+
+  describe('Privilege Escalation Prevention', () => {
+    test('36. Refresh with requested admin role - still gets original viewer role', async () => {
+      // Create a viewer-only session
+      const { refreshToken } = await createSessionAndToken('viewerOnly', ['viewer']);
+
+      // Attacker attempts to escalate by requesting admin role
+      const res = await request(gatewayApp)
+        .post('/auth/refresh')
+        .send({ refreshToken, roles: ['admin'] }); // Malicious payload
+
+      expect(res.status).toBe(200);
+
+      // Use the new token to try admin route
+      const adminRes = await request(gatewayApp)
+        .post('/admin/reindex')
+        .set('Authorization', `Bearer ${res.body.accessToken}`);
+
+      // Should still be forbidden - roles came from session, not request
+      expect(adminRes.status).toBe(403);
+    });
+
+    test('37. Refresh ignores all client-provided role combinations', async () => {
+      // Create editor session
+      const { refreshToken } = await createSessionAndToken('editorOnly', ['editor']);
+
+      // Try various escalation attempts
+      const escalationAttempts = [
+        { roles: ['admin'] },
+        { roles: ['admin', 'editor', 'viewer'] },
+        { roles: ['superadmin'] }, // Invalid role
+        { roles: [] }, // Empty roles
+      ];
+
+      for (const payload of escalationAttempts) {
+        const res = await request(gatewayApp)
+          .post('/auth/refresh')
+          .send({ refreshToken: (await createSessionAndToken('editorOnly', ['editor'])).refreshToken, ...payload });
+
+        expect(res.status).toBe(200);
+
+        // Verify cannot access admin route
+        const adminRes = await request(gatewayApp)
+          .post('/admin/reindex')
+          .set('Authorization', `Bearer ${res.body.accessToken}`);
+        expect(adminRes.status).toBe(403);
+      }
+    });
+  });
 });
 
 // ==========================================
@@ -581,7 +632,7 @@ describe('G) Session Management', () => {
 // ==========================================
 
 describe('H) Downstream Direct-Access Protection', () => {
-  test('36. Direct call to downstream without internal auth returns 401', async () => {
+  test('38. Direct call to downstream without internal auth returns 401', async () => {
     const res = await request(downstreamApp)
       .post('/internal/reindex')
       .send({});
@@ -589,7 +640,7 @@ describe('H) Downstream Direct-Access Protection', () => {
     expect(res.status).toBe(401);
   });
 
-  test('37. Downstream rejects forged internal token', async () => {
+  test('39. Downstream rejects forged internal token', async () => {
     // Create token with wrong signing key
     const wrongSecret = new TextEncoder().encode('wrong-internal-secret');
     const jose = require('jose');
@@ -618,11 +669,93 @@ describe('H) Downstream Direct-Access Protection', () => {
 });
 
 // ==========================================
-// I) Regression / Invariants
+// I) CORS Security
 // ==========================================
 
-describe('I) Regression / Invariants', () => {
-  test('38. All write endpoints enforce complete auth chain', async () => {
+describe('I) CORS Security', () => {
+  test('40. Preflight from allowed origin returns CORS headers', async () => {
+    const res = await request(gatewayApp)
+      .options('/reports/r1')
+      .set('Origin', 'https://trusted.example.com')
+      .set('Access-Control-Request-Method', 'GET');
+
+    expect(res.status).toBe(204);
+    expect(res.headers['access-control-allow-origin']).toBe('https://trusted.example.com');
+    expect(res.headers['access-control-allow-credentials']).toBe('true');
+    expect(res.headers['access-control-allow-methods']).toContain('GET');
+  });
+
+  test('41. Preflight from disallowed origin returns 403', async () => {
+    const res = await request(gatewayApp)
+      .options('/reports/r1')
+      .set('Origin', 'https://malicious.example.com')
+      .set('Access-Control-Request-Method', 'GET');
+
+    expect(res.status).toBe(403);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  test('42. Null origin is rejected', async () => {
+    const res = await request(gatewayApp)
+      .options('/reports/r1')
+      .set('Origin', 'null')
+      .set('Access-Control-Request-Method', 'GET');
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('Null origin not allowed');
+  });
+
+  test('43. Request from allowed origin includes CORS headers', async () => {
+    const { token } = await createSessionAndToken('userA', ['viewer']);
+
+    const res = await request(gatewayApp)
+      .get('/reports/r1')
+      .set('Origin', 'https://trusted.example.com')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('https://trusted.example.com');
+    expect(res.headers['vary']).toContain('Origin');
+  });
+
+  test('44. Request from disallowed origin has no CORS headers', async () => {
+    const { token } = await createSessionAndToken('userA', ['viewer']);
+
+    const res = await request(gatewayApp)
+      .get('/reports/r1')
+      .set('Origin', 'https://malicious.example.com')
+      .set('Authorization', `Bearer ${token}`);
+
+    // Request succeeds (server-side), but no CORS headers
+    // Browser would block the response
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  test('45. Vary: Origin header always present for caching correctness', async () => {
+    const { token } = await createSessionAndToken('userA', ['viewer']);
+
+    // With allowed origin
+    const res1 = await request(gatewayApp)
+      .get('/reports/r1')
+      .set('Origin', 'https://trusted.example.com')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res1.headers['vary']).toContain('Origin');
+
+    // Without origin (same-origin request)
+    const res2 = await request(gatewayApp)
+      .get('/reports/r1')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res2.headers['vary']).toContain('Origin');
+  });
+});
+
+// ==========================================
+// J) Regression / Invariants
+// ==========================================
+
+describe('J) Regression / Invariants', () => {
+  test('46. All write endpoints enforce complete auth chain', async () => {
     // Test POST /reports without token
     const res1 = await request(gatewayApp).post('/reports').send({ title: 'Test' });
     expect([401, 403]).toContain(res1.status);
@@ -636,7 +769,7 @@ describe('I) Regression / Invariants', () => {
     expect([401, 403]).toContain(res3.status);
   });
 
-  test('39. No 500 errors for expected authz failures', async () => {
+  test('47. No 500 errors for expected authz failures', async () => {
     // Various auth failures should return 4xx, not 5xx
     const responses = await Promise.all([
       request(gatewayApp).get('/reports/r1'), // no token
@@ -650,7 +783,7 @@ describe('I) Regression / Invariants', () => {
     });
   });
 
-  test('40. Forbidden requests are side-effect free', async () => {
+  test('48. Forbidden requests are side-effect free', async () => {
     setTestNow(BUSINESS_HOURS_TIME);
 
     // Create a viewer token (no write permissions)

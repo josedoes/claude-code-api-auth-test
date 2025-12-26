@@ -25,6 +25,7 @@ export interface InternalTokenPayload {
 export interface Session {
   id: string;
   userId: string;
+  roles: Role[]; // Roles are immutable for session lifetime - prevents escalation
   refreshToken: string;
   expiresAt: number; // Unix timestamp
   revoked: boolean;

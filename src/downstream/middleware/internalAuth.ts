@@ -26,17 +26,37 @@ export function createInternalAuthMiddleware() {
     const token = authHeader.slice(7);
 
     try {
+      // SECURITY: Pre-verification algorithm check
+      // Reject alg=none BEFORE verification to prevent algorithm confusion attacks
+      const tokenParts = token.split('.');
+      if (tokenParts.length !== 3) {
+        res.status(401).json({ error: 'Invalid token format' });
+        return;
+      }
+
+      let header: { alg?: string };
+      try {
+        header = JSON.parse(Buffer.from(tokenParts[0], 'base64url').toString());
+      } catch {
+        res.status(401).json({ error: 'Invalid token header' });
+        return;
+      }
+
+      if (header.alg === 'none' || header.alg === 'None' || header.alg === 'NONE') {
+        res.status(401).json({ error: 'Algorithm none not allowed' });
+        return;
+      }
+
+      if (header.alg !== 'HS256') {
+        res.status(401).json({ error: 'Unexpected algorithm' });
+        return;
+      }
+
       // Verify the token
-      const { payload, protectedHeader } = await jose.jwtVerify(token, secret, {
+      const { payload } = await jose.jwtVerify(token, secret, {
         issuer: config.downstream.internalJwtIssuer,
         audience: config.downstream.internalJwtAudience,
       });
-
-      // Reject alg=none
-      if (protectedHeader.alg === 'none') {
-        res.status(401).json({ error: 'Invalid algorithm' });
-        return;
-      }
 
       const typedPayload = payload as unknown as InternalTokenPayload;
 

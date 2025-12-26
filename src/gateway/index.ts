@@ -5,12 +5,18 @@ import { createAuthMiddleware } from './middleware/auth';
 import { createRbacMiddleware } from './middleware/rbac';
 import { createAbacMiddleware } from './middleware/abac';
 import { createSessionMiddleware } from './middleware/session';
+import { createCorsMiddleware } from './middleware/cors';
 import { sessionStore } from './store/sessionStore';
 import { reportStore } from './store/reportStore';
 import { egressClient } from './egress/client';
 import { createAuthRoutes } from './routes/auth';
 
 const app = express();
+
+// CORS must be first - before body parsing, before any routes
+// This ensures preflight requests are handled correctly
+app.use(createCorsMiddleware());
+
 app.use(express.json());
 
 // Test time control middleware

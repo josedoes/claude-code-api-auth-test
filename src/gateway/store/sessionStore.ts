@@ -1,13 +1,14 @@
 import Redis from 'ioredis';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../../shared/config';
-import { Session } from '../../shared/types';
+import { Role, Session } from '../../shared/types';
 import { getNow } from '../../shared/clock';
 
 export interface SessionStore {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
-  create(userId: string, ttlMs: number): Promise<{ session: Session; refreshToken: string }>;
+  // Roles MUST be provided at creation and are immutable - prevents privilege escalation
+  create(userId: string, roles: Role[], ttlMs: number): Promise<{ session: Session; refreshToken: string }>;
   getById(sessionId: string): Promise<Session | null>;
   getByRefreshToken(refreshToken: string): Promise<Session | null>;
   rotateRefreshToken(sessionId: string): Promise<string | null>;
@@ -33,14 +34,25 @@ class InMemorySessionStore implements SessionStore {
     this.lockMap.clear();
   }
 
-  async create(userId: string, ttlMs: number): Promise<{ session: Session; refreshToken: string }> {
+  async create(userId: string, roles: Role[], ttlMs: number): Promise<{ session: Session; refreshToken: string }> {
     const sessionId = uuidv4();
     const refreshToken = uuidv4();
     const now = getNow().getTime();
 
+    // Validate roles - must be non-empty and contain only valid values
+    if (!roles || roles.length === 0) {
+      throw new Error('Roles are required for session creation');
+    }
+    const validRoles: Role[] = ['viewer', 'editor', 'admin'];
+    const sanitizedRoles = roles.filter(r => validRoles.includes(r));
+    if (sanitizedRoles.length === 0) {
+      throw new Error('At least one valid role is required');
+    }
+
     const session: Session = {
       id: sessionId,
       userId,
+      roles: sanitizedRoles, // Immutable for session lifetime
       refreshToken,
       expiresAt: now + ttlMs,
       revoked: false,
@@ -144,8 +156,18 @@ class RedisSessionStore implements SessionStore {
     }
   }
 
-  async create(userId: string, ttlMs: number): Promise<{ session: Session; refreshToken: string }> {
+  async create(userId: string, roles: Role[], ttlMs: number): Promise<{ session: Session; refreshToken: string }> {
     if (!this.client) throw new Error('Redis not connected');
+
+    // Validate roles - must be non-empty and contain only valid values
+    if (!roles || roles.length === 0) {
+      throw new Error('Roles are required for session creation');
+    }
+    const validRoles: Role[] = ['viewer', 'editor', 'admin'];
+    const sanitizedRoles = roles.filter(r => validRoles.includes(r));
+    if (sanitizedRoles.length === 0) {
+      throw new Error('At least one valid role is required');
+    }
 
     const sessionId = uuidv4();
     const refreshToken = uuidv4();
@@ -154,6 +176,7 @@ class RedisSessionStore implements SessionStore {
     const session: Session = {
       id: sessionId,
       userId,
+      roles: sanitizedRoles, // Immutable for session lifetime
       refreshToken,
       expiresAt: now + ttlMs,
       revoked: false,
