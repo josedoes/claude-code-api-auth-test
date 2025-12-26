@@ -7,15 +7,15 @@ A test-driven implementation proving Claude Code can build a complete, security-
 From a LinkedIn debate:
 > "By about the third ask. Start with JWT, ask it to add RBAC to ingress and egress, then add ABAC to ingress and egress. At this point it starts to break down. Then add session management associated with JWT and it just breaks entirely. It really can only add JWT"
 
-**Result:** All 48 integration tests pass with production-grade security.
+**Result:** All 55 integration tests pass with production-grade security.
 
 ## ⏱️ Implementation Metrics
 
 | Metric | Value |
 |--------|-------|
-| **Lines of TypeScript** | ~2,200 |
+| **Lines of TypeScript** | ~2,500 |
 | **Source Files** | 18 |
-| **Integration Tests** | 48 |
+| **Integration Tests** | 55 |
 | **Test Pass Rate** | 100% |
 
 ### Timeline
@@ -98,8 +98,9 @@ From a LinkedIn debate:
 | F) ABAC Egress | 4 | Verify identity propagation, no spoofing |
 | G) Session Mgmt | 11 | Refresh rotation, logout, TTL, concurrency, **privilege escalation prevention** |
 | H) Downstream Protection | 2 | Direct access denied, forged tokens rejected |
-| I) CORS Security | 6 | Preflight, origin validation, null rejection, Vary header |
+| I) CORS Security | 6 | Preflight, origin validation, null rejection, side-effect prevention |
 | J) Invariants | 3 | No 500s, side-effect free denials |
+| K) Security Hardening | 7 | Algorithm rejection (HS384/RS256), missing claims, downstream claims |
 
 ## 🛡️ Security Hardening
 
@@ -107,13 +108,17 @@ Key security measures implemented:
 
 1. **Privilege Escalation Prevention**: Roles are stored immutably in the session at creation time. The refresh endpoint ignores any client-provided roles in the request body.
 
-2. **Algorithm Confusion Prevention**: JWT algorithm is validated BEFORE signature verification. Only HS256 is accepted; `alg=none` (in all case variations) is explicitly rejected.
+2. **Algorithm Confusion Prevention**: JWT algorithm is validated BEFORE signature verification. Only HS256 is accepted; `alg=none`, `HS384`, `RS256` etc. are explicitly rejected.
 
-3. **Atomic Token Operations**: Refresh token single-use is enforced via atomic Redis SETNX, preventing race conditions in concurrent refresh attempts.
+3. **Explicit Egress Authorization**: The egress client has its own policy map and enforces authorization BEFORE making downstream calls—defense-in-depth against forgotten middleware.
 
-4. **Defense in Depth**: Both gateway and downstream services independently validate JWTs with the same rigor.
+4. **Atomic Token Operations**: Refresh token single-use is enforced via atomic Redis SETNX, preventing race conditions in concurrent refresh attempts.
 
-5. **No Trust in Client Headers**: User identity is derived exclusively from verified JWT claims, never from spoofable headers like `X-User` or `X-Roles`.
+5. **Defense in Depth**: Both gateway and downstream services independently validate JWTs with required claims validation.
+
+6. **No Trust in Client Headers**: User identity is derived exclusively from verified JWT claims, never from spoofable headers like `X-User` or `X-Roles`.
+
+7. **CORS Side-Effect Prevention**: Disallowed origins receive 403 for ALL request types, not just preflights—preventing any server-side effects from hostile origins.
 
 ## 🚀 Quick Start
 

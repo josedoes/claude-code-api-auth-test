@@ -45,16 +45,10 @@ export function createCorsMiddleware() {
 
     // SECURITY: Strict origin validation
     // Only allow explicitly configured origins
+    // Reject ALL requests from disallowed origins with 403
+    // This prevents any side effects from hostile origins
     if (!allowedOrigins.has(origin)) {
-      // Don't include CORS headers - browser will block the response
-      // Return 403 for clarity in logs, but browser won't see response anyway
-      if (req.method === 'OPTIONS') {
-        res.status(403).json({ error: 'Origin not allowed' });
-        return;
-      }
-      // For non-preflight, proceed without CORS headers
-      // The browser will block the response due to missing headers
-      next();
+      res.status(403).json({ error: 'Origin not allowed' });
       return;
     }
 

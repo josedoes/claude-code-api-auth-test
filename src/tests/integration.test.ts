@@ -51,12 +51,24 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => {
-    gatewayServer.close(() => resolve());
+  // Close servers in reverse order of startup
+  // Small delay to let pending requests complete
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  await new Promise<void>((resolve, reject) => {
+    gatewayServer.close((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
   });
-  await new Promise<void>((resolve) => {
-    downstreamServer.close(() => resolve());
+
+  await new Promise<void>((resolve, reject) => {
+    downstreamServer.close((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
   });
+
   await sessionStore.disconnect();
 });
 
@@ -718,7 +730,7 @@ describe('I) CORS Security', () => {
     expect(res.headers['vary']).toContain('Origin');
   });
 
-  test('44. Request from disallowed origin has no CORS headers', async () => {
+  test('44. Request from disallowed origin is rejected with 403', async () => {
     const { token } = await createSessionAndToken('userA', ['viewer']);
 
     const res = await request(gatewayApp)
@@ -726,10 +738,10 @@ describe('I) CORS Security', () => {
       .set('Origin', 'https://malicious.example.com')
       .set('Authorization', `Bearer ${token}`);
 
-    // Request succeeds (server-side), but no CORS headers
-    // Browser would block the response
-    expect(res.status).toBe(200);
-    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    // SECURITY: Disallowed origins are rejected entirely
+    // This prevents any side effects from hostile origins
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('Origin not allowed');
   });
 
   test('45. Vary: Origin header always present for caching correctness', async () => {
@@ -805,5 +817,188 @@ describe('J) Regression / Invariants', () => {
     // No downstream calls should have been made
     expect(callsAfter.reportUpdate).toBe(callsBefore.reportUpdate);
     expect(callsAfter.reindex).toBe(callsBefore.reindex);
+  });
+});
+
+// ==========================================
+// K) Additional Security Hardening Tests
+// ==========================================
+
+describe('K) Additional Security Hardening', () => {
+  describe('Algorithm Rejection', () => {
+    test('49. Token with HS384 algorithm is rejected', async () => {
+      // Manually craft a token header claiming HS384
+      const header = Buffer.from(JSON.stringify({ alg: 'HS384', typ: 'JWT' })).toString('base64url');
+      const payload = Buffer.from(JSON.stringify({
+        sub: 'userA',
+        roles: ['admin'],
+        sid: 'fake-session',
+        jti: 'fake-jti',
+        iss: 'auth-gauntlet',
+        aud: 'auth-gauntlet-api',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      })).toString('base64url');
+      const fakeToken = `${header}.${payload}.fakesignature`;
+
+      const res = await request(gatewayApp)
+        .get('/reports/r1')
+        .set('Authorization', `Bearer ${fakeToken}`);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Unexpected algorithm');
+    });
+
+    test('50. Token with RS256 algorithm is rejected', async () => {
+      const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+      const payload = Buffer.from(JSON.stringify({
+        sub: 'userA',
+        roles: ['admin'],
+        sid: 'fake-session',
+        jti: 'fake-jti',
+        iss: 'auth-gauntlet',
+        aud: 'auth-gauntlet-api',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      })).toString('base64url');
+      const fakeToken = `${header}.${payload}.fakesignature`;
+
+      const res = await request(gatewayApp)
+        .get('/reports/r1')
+        .set('Authorization', `Bearer ${fakeToken}`);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Unexpected algorithm');
+    });
+  });
+
+  describe('Missing Required Claims', () => {
+    test('51. Token missing sid claim is rejected', async () => {
+      const jose = require('jose');
+      const secret = new TextEncoder().encode('test-secret-key-for-external-tokens');
+
+      // Create token without sid
+      const token = await new jose.SignJWT({
+        sub: 'userA',
+        roles: ['viewer'],
+        jti: 'test-jti',
+        // sid intentionally missing
+      })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .setIssuer('auth-gauntlet')
+        .setAudience('auth-gauntlet-api')
+        .sign(secret);
+
+      const res = await request(gatewayApp)
+        .get('/reports/r1')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Missing required claims');
+    });
+
+    test('52. Token missing jti claim is rejected', async () => {
+      const jose = require('jose');
+      const secret = new TextEncoder().encode('test-secret-key-for-external-tokens');
+
+      const token = await new jose.SignJWT({
+        sub: 'userA',
+        roles: ['viewer'],
+        sid: 'test-session',
+        // jti intentionally missing
+      })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .setIssuer('auth-gauntlet')
+        .setAudience('auth-gauntlet-api')
+        .sign(secret);
+
+      const res = await request(gatewayApp)
+        .get('/reports/r1')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Missing required claims');
+    });
+  });
+
+  describe('Downstream Claims Validation', () => {
+    test('53. Internal token missing roles is rejected by downstream', async () => {
+      const jose = require('jose');
+      const internalSecret = new TextEncoder().encode('test-secret-key-for-internal-tokens');
+
+      // Create internal token without roles
+      const token = await new jose.SignJWT({
+        sub: 'userA',
+        sessionId: 'test-session',
+        jti: 'test-jti',
+        // roles intentionally missing
+      })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('1m')
+        .setIssuer('gateway')
+        .setAudience('downstream')
+        .sign(internalSecret);
+
+      const res = await request(downstreamApp)
+        .post('/internal/reindex')
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Missing required claim: roles');
+    });
+
+    test('54. Internal token missing sessionId is rejected by downstream', async () => {
+      const jose = require('jose');
+      const internalSecret = new TextEncoder().encode('test-secret-key-for-internal-tokens');
+
+      const token = await new jose.SignJWT({
+        sub: 'userA',
+        roles: ['admin'],
+        jti: 'test-jti',
+        // sessionId intentionally missing
+      })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('1m')
+        .setIssuer('gateway')
+        .setAudience('downstream')
+        .sign(internalSecret);
+
+      const res = await request(downstreamApp)
+        .post('/internal/reindex')
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Missing required claim: sessionId');
+    });
+  });
+
+  describe('CORS Side-Effect Prevention', () => {
+    test('55. Disallowed origin write request is rejected before side effects', async () => {
+      const { token } = await createSessionAndToken('userA', ['editor']);
+      setTestNow(BUSINESS_HOURS_TIME);
+
+      const callsBefore = await getDownstreamCalls();
+
+      // Attempt write from disallowed origin
+      const res = await request(gatewayApp)
+        .post('/reports/r1/update')
+        .set('Origin', 'https://malicious.example.com')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-Test-Now', BUSINESS_HOURS_TIME.toISOString());
+
+      // Request should be rejected
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('Origin not allowed');
+
+      // Verify no downstream call was made
+      const callsAfter = await getDownstreamCalls();
+      expect(callsAfter.reportUpdate).toBe(callsBefore.reportUpdate);
+    });
   });
 });

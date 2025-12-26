@@ -60,6 +60,25 @@ export function createInternalAuthMiddleware() {
 
       const typedPayload = payload as unknown as InternalTokenPayload;
 
+      // SECURITY: Validate required claims exist
+      // Defense-in-depth: don't trust that gateway sent complete identity
+      if (!typedPayload.sub || typeof typedPayload.sub !== 'string') {
+        res.status(401).json({ error: 'Missing required claim: sub' });
+        return;
+      }
+      if (!typedPayload.roles || !Array.isArray(typedPayload.roles) || typedPayload.roles.length === 0) {
+        res.status(401).json({ error: 'Missing required claim: roles' });
+        return;
+      }
+      if (!typedPayload.sessionId || typeof typedPayload.sessionId !== 'string') {
+        res.status(401).json({ error: 'Missing required claim: sessionId' });
+        return;
+      }
+      if (!typedPayload.jti || typeof typedPayload.jti !== 'string') {
+        res.status(401).json({ error: 'Missing required claim: jti' });
+        return;
+      }
+
       // Attach auth context to request
       req.authContext = {
         sub: typedPayload.sub,
