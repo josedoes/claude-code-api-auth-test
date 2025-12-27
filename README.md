@@ -7,7 +7,7 @@ A test-driven implementation proving Claude Code can build a complete, security-
 From a LinkedIn debate:
 > "By about the third ask. Start with JWT, ask it to add RBAC to ingress and egress, then add ABAC to ingress and egress. At this point it starts to break down. Then add session management associated with JWT and it just breaks entirely. It really can only add JWT"
 
-**Result:** All 55 integration tests pass with production-grade security.
+**Result:** All 59 integration tests pass with production-grade security.
 
 ## ⏱️ Implementation Metrics
 
@@ -15,7 +15,7 @@ From a LinkedIn debate:
 |--------|-------|
 | **Lines of TypeScript** | ~2,500 |
 | **Source Files** | 18 |
-| **Integration Tests** | 55 |
+| **Integration Tests** | 59 |
 | **Test Pass Rate** | 100% |
 
 ### Timeline
@@ -100,7 +100,7 @@ From a LinkedIn debate:
 | H) Downstream Protection | 2 | Direct access denied, forged tokens rejected |
 | I) CORS Security | 6 | Preflight, origin validation, null rejection, side-effect prevention |
 | J) Invariants | 3 | No 500s, side-effect free denials |
-| K) Security Hardening | 7 | Algorithm rejection (HS384/RS256), missing claims, downstream claims |
+| K) Security Hardening | 11 | Algorithm rejection, missing claims, downstream claims, **session-JWT association** |
 
 ## 🛡️ Security Hardening
 
@@ -119,6 +119,10 @@ Key security measures implemented:
 6. **No Trust in Client Headers**: User identity is derived exclusively from verified JWT claims, never from spoofable headers like `X-User` or `X-Roles`.
 
 7. **CORS Side-Effect Prevention**: Disallowed origins receive 403 for ALL request types, not just preflights—preventing any server-side effects from hostile origins.
+
+8. **Session-JWT Association**: Session middleware verifies JWT subject matches session owner, preventing session hijacking. Session roles override JWT roles—the session is authoritative, not the token.
+
+9. **Explicit ABAC Policy Evaluation**: ABAC evaluates attribute-based permissions against ALL roles the user has, not just a binary admin check. Each role has explicitly defined attribute capabilities.
 
 ## 📋 Scope & Exclusions
 
@@ -178,7 +182,7 @@ src/
 │   ├── config.ts        # Environment config + CORS origins
 │   └── clock.ts         # Time control for tests
 └── tests/
-    ├── integration.test.ts  # All 48 tests
+    ├── integration.test.ts  # All 59 tests
     └── helpers.ts       # Token generation utils
 ```
 

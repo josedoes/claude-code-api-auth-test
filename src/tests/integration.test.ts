@@ -1001,4 +1001,74 @@ describe('K) Additional Security Hardening', () => {
       expect(callsAfter.reportUpdate).toBe(callsBefore.reportUpdate);
     });
   });
+
+  describe('Session-JWT Association', () => {
+    test('56. JWT with another user session ID is rejected (session hijacking prevention)', async () => {
+      // Create a session for userA
+      const { session: sessionA } = await sessionStore.create('userA', ['viewer'], 3600000);
+
+      // Create a JWT for userB but using userA's session ID
+      const hijackedToken = await createTestToken({
+        sub: 'userB', // Different user
+        roles: ['viewer'],
+        sid: sessionA.id, // Stolen session ID
+      });
+
+      const res = await request(gatewayApp)
+        .get('/reports/r1')
+        .set('Authorization', `Bearer ${hijackedToken}`);
+
+      // Should be rejected - session user doesn't match JWT sub
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('Session user mismatch');
+    });
+
+    test('57. Session roles override JWT roles (role tampering prevention)', async () => {
+      // Create a session with viewer role
+      const { session } = await sessionStore.create('userA', ['viewer'], 3600000);
+
+      // Create a JWT claiming admin role, but session has viewer
+      const tamperedToken = await createTestToken({
+        sub: 'userA',
+        roles: ['admin'], // Tampered - claiming admin
+        sid: session.id,
+      });
+
+      // Try admin-only route
+      const res = await request(gatewayApp)
+        .post('/admin/reindex')
+        .set('Authorization', `Bearer ${tamperedToken}`);
+
+      // Should be rejected - session roles are authoritative, not JWT roles
+      expect(res.status).toBe(403);
+    });
+
+    test('58. Multi-role ABAC evaluation - editor+viewer can update own report', async () => {
+      setTestNow(BUSINESS_HOURS_TIME);
+      // User with both editor and viewer roles
+      const { token } = await createSessionAndToken('userA', ['viewer', 'editor']);
+
+      const res = await request(gatewayApp)
+        .post('/reports/r1/update')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-Test-Now', BUSINESS_HOURS_TIME.toISOString());
+
+      expect(res.status).toBe(200);
+    });
+
+    test('59. ABAC policy is evaluated for ALL user roles', async () => {
+      setTestNow(BUSINESS_HOURS_TIME);
+      // User with admin role can bypass ownership
+      const { token } = await createSessionAndToken('admin1', ['admin']);
+
+      // Admin updating report owned by userA (not admin1)
+      const res = await request(gatewayApp)
+        .post('/reports/r1/update')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-Test-Now', BUSINESS_HOURS_TIME.toISOString());
+
+      // Should succeed because admin role has canBypassOwnership=true
+      expect(res.status).toBe(200);
+    });
+  });
 });
