@@ -7,7 +7,7 @@ A test-driven implementation proving Claude Code can build a complete, security-
 From a LinkedIn debate:
 > "By about the third ask. Start with JWT, ask it to add RBAC to ingress and egress, then add ABAC to ingress and egress. At this point it starts to break down. Then add session management associated with JWT and it just breaks entirely. It really can only add JWT"
 
-**Result:** All 59 integration tests pass with production-grade security.
+**Result:** All 61 integration tests pass with production-grade security.
 
 ## ⏱️ Implementation Metrics
 
@@ -15,7 +15,7 @@ From a LinkedIn debate:
 |--------|-------|
 | **Lines of TypeScript** | ~2,500 |
 | **Source Files** | 18 |
-| **Integration Tests** | 59 |
+| **Integration Tests** | 61 |
 | **Test Pass Rate** | 100% |
 
 ### Timeline
@@ -68,9 +68,16 @@ From a LinkedIn debate:
 - Enforced on both ingress AND egress
 
 ### ABAC (Attribute-Based Access Control)
+Evaluates all four ABAC attribute categories per [industry standards](https://frontegg.com/guides/abac):
+1. **Subject Attributes**: User identity (`sub`) and roles
+2. **Resource Attributes**: Resource ownership (`ownerId`)
+3. **Action Attributes**: Operation type (`read`/`write`/`delete`/`admin`)
+4. **Environmental Attributes**: Business hours (09:00-17:00 America/Toronto)
+
+Policy evaluation:
 - Ownership verification (user can only modify own resources)
-- Business hours enforcement (09:00-17:00 America/Toronto)
 - Admin can bypass ownership (not business hours)
+- Each role explicitly defines permitted actions and attribute capabilities
 
 ### Session Management
 - **Roles stored in session** - prevents privilege escalation on refresh
@@ -100,7 +107,7 @@ From a LinkedIn debate:
 | H) Downstream Protection | 2 | Direct access denied, forged tokens rejected |
 | I) CORS Security | 6 | Preflight, origin validation, null rejection, side-effect prevention |
 | J) Invariants | 3 | No 500s, side-effect free denials |
-| K) Security Hardening | 11 | Algorithm rejection, missing claims, downstream claims, **session-JWT association** |
+| K) Security Hardening | 13 | Algorithm rejection, missing claims, downstream claims, session-JWT association, **ABAC action attributes** |
 
 ## 🛡️ Security Hardening
 
@@ -122,7 +129,7 @@ Key security measures implemented:
 
 8. **Session-JWT Association**: Session middleware verifies JWT subject matches session owner, preventing session hijacking. Session roles override JWT roles—the session is authoritative, not the token.
 
-9. **Explicit ABAC Policy Evaluation**: ABAC evaluates attribute-based permissions against ALL roles the user has, not just a binary admin check. Each role has explicitly defined attribute capabilities.
+9. **Explicit ABAC Policy Evaluation**: ABAC evaluates all four attribute categories (subject, resource, action, environment) against ALL roles the user has. Each role has explicitly defined action permissions and attribute capabilities in separate policy matrices.
 
 ## 📋 Scope & Exclusions
 
@@ -182,7 +189,7 @@ src/
 │   ├── config.ts        # Environment config + CORS origins
 │   └── clock.ts         # Time control for tests
 └── tests/
-    ├── integration.test.ts  # All 59 tests
+    ├── integration.test.ts  # All 61 tests
     └── helpers.ts       # Token generation utils
 ```
 

@@ -65,7 +65,7 @@ app.post(
   authenticate,
   checkSession,
   rbac(['editor', 'admin']),
-  abac({ checkBusinessHours: true }),
+  abac({ action: 'write', checkBusinessHours: true }),
   async (req, res) => {
     const report = await reportStore.create({
       ownerId: req.authContext!.sub,
@@ -81,7 +81,7 @@ app.post(
   authenticate,
   checkSession,
   rbac(['editor', 'admin']),
-  abac({ checkOwnership: true, checkBusinessHours: true }),
+  abac({ action: 'write', checkOwnership: true, checkBusinessHours: true }),
   async (req, res) => {
     const report = await reportStore.getById(req.params.id);
     if (!report) {
@@ -106,7 +106,7 @@ app.post(
   authenticate,
   checkSession,
   rbac(['admin']),
-  abac({ checkBusinessHours: true }),
+  abac({ action: 'admin', checkBusinessHours: true }),
   async (req, res) => {
     const result = await egressClient.reindex(req.authContext!);
     if (!result.success) {

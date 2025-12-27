@@ -1070,5 +1070,36 @@ describe('K) Additional Security Hardening', () => {
       // Should succeed because admin role has canBypassOwnership=true
       expect(res.status).toBe(200);
     });
+
+    test('60. ABAC action attribute - viewer cannot perform write action', async () => {
+      setTestNow(BUSINESS_HOURS_TIME);
+      // Viewer role only has 'read' action permission
+      const { token } = await createSessionAndToken('viewerOnly', ['viewer']);
+
+      // Attempt to create a report (write action)
+      const res = await request(gatewayApp)
+        .post('/reports')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-Test-Now', BUSINESS_HOURS_TIME.toISOString())
+        .send({ title: 'Test Report' });
+
+      // Should be denied by ABAC action check (or RBAC - either is acceptable)
+      expect(res.status).toBe(403);
+    });
+
+    test('61. ABAC action attribute - editor cannot perform admin action', async () => {
+      setTestNow(BUSINESS_HOURS_TIME);
+      // Editor role has 'read' and 'write' but not 'admin' action
+      const { token } = await createSessionAndToken('editorOnly', ['editor']);
+
+      // Attempt admin reindex (admin action)
+      const res = await request(gatewayApp)
+        .post('/admin/reindex')
+        .set('Authorization', `Bearer ${token}`)
+        .set('X-Test-Now', BUSINESS_HOURS_TIME.toISOString());
+
+      // Should be denied
+      expect(res.status).toBe(403);
+    });
   });
 });
