@@ -8,11 +8,23 @@ import { Role } from '../../shared/types';
  */
 type AbacAction = 'read' | 'write' | 'delete' | 'admin';
 
-interface AbacOptions {
+/**
+ * Per-Role ABAC Policy Declaration
+ * Each role gets its own explicit set of attribute requirements
+ */
+interface RoleAbacPolicy {
   action: AbacAction;
-  checkOwnership?: boolean;
-  checkBusinessHours?: boolean;
+  checkOwnership: boolean;
+  checkBusinessHours: boolean;
 }
+
+/**
+ * ABAC Options - Declares policies for EACH role separately
+ * This is the correct ABAC pattern: each role has its own parameter declaration
+ */
+type AbacOptions = {
+  [K in Role]?: RoleAbacPolicy;
+};
 
 /**
  * ABAC Policy Engine - Evaluates all four attribute categories:
@@ -22,65 +34,9 @@ interface AbacOptions {
  * 3. ACTION ATTRIBUTES: The operation being performed (read/write/delete/admin)
  * 4. ENVIRONMENTAL ATTRIBUTES: Time of day (business hours)
  *
- * Policy evaluation combines all attributes to make access decisions.
- * Access is granted if ANY of the user's roles permits the action.
+ * IMPORTANT: Each role has its own ABAC declaration with its own parameters.
+ * Access is granted if ANY of the user's roles has a policy that permits access.
  */
-
-/**
- * Role-Action Permission Matrix
- * Defines which actions each role can perform
- */
-const ROLE_ACTION_PERMISSIONS: Record<Role, Set<AbacAction>> = {
-  viewer: new Set(['read']),
-  editor: new Set(['read', 'write']),
-  admin: new Set(['read', 'write', 'delete', 'admin']),
-};
-
-/**
- * Role-Attribute Policy Matrix
- * Defines attribute-based capabilities for each role
- */
-const ROLE_ATTRIBUTE_POLICY: Record<Role, {
-  canBypassOwnership: boolean;
-  canBypassBusinessHours: boolean;
-}> = {
-  viewer: {
-    canBypassOwnership: false,
-    canBypassBusinessHours: false,
-  },
-  editor: {
-    canBypassOwnership: false,
-    canBypassBusinessHours: false,
-  },
-  admin: {
-    canBypassOwnership: true,
-    canBypassBusinessHours: false, // Even admins must respect business hours
-  },
-};
-
-/**
- * Evaluate if ANY of the user's roles permits the action
- */
-function canPerformAction(roles: Role[], action: AbacAction): boolean {
-  return roles.some(role => {
-    const permissions = ROLE_ACTION_PERMISSIONS[role];
-    return permissions ? permissions.has(action) : false;
-  });
-}
-
-/**
- * Evaluate an ABAC attribute across ALL roles the user has
- * Returns true if ANY role permits the attribute
- */
-function evaluateAttribute(
-  roles: Role[],
-  attribute: keyof typeof ROLE_ATTRIBUTE_POLICY[Role]
-): boolean {
-  return roles.some(role => {
-    const policy = ROLE_ATTRIBUTE_POLICY[role];
-    return policy ? policy[attribute] : false;
-  });
-}
 
 // Business hours: 09:00-17:00 America/Toronto
 function isWithinBusinessHours(date: Date): boolean {
@@ -96,7 +52,42 @@ function isWithinBusinessHours(date: Date): boolean {
 }
 
 /**
- * ABAC Decision Point - Evaluates all four attribute categories
+ * Evaluate ABAC policy for a specific role
+ * Returns: { allowed: boolean, reason?: string }
+ */
+async function evaluateRolePolicy(
+  policy: RoleAbacPolicy,
+  authContext: { sub: string; roles: Role[] },
+  req: Request,
+  reportStore: ReportStore
+): Promise<{ allowed: boolean; reason?: string }> {
+  const now = getNow();
+
+  // Check business hours for this role's policy
+  if (policy.checkBusinessHours && !isWithinBusinessHours(now)) {
+    return { allowed: false, reason: 'Operation not allowed outside business hours' };
+  }
+
+  // Check ownership for this role's policy
+  if (policy.checkOwnership && req.params.id) {
+    const report = await reportStore.getById(req.params.id);
+    if (!report) {
+      return { allowed: false, reason: 'Report not found' };
+    }
+    const isOwner = report.ownerId === authContext.sub;
+    if (!isOwner) {
+      return { allowed: false, reason: 'Not authorized to modify this resource' };
+    }
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * ABAC Decision Point - Evaluates per-role policies
+ *
+ * Each role declared in the options has its own ABAC parameters.
+ * User must have at least one role with a policy that permits access.
  */
 export function createAbacMiddleware(reportStore: ReportStore) {
   return (options: AbacOptions) => {
@@ -109,54 +100,45 @@ export function createAbacMiddleware(reportStore: ReportStore) {
       }
 
       // ========================================
-      // 1. ACTION ATTRIBUTE CHECK
+      // EVALUATE ABAC POLICY FOR EACH ROLE
       // ========================================
-      // Verify the user's roles permit this action type
-      if (!canPerformAction(authContext.roles, options.action)) {
+      // Find which of the user's roles have declared policies
+      const userRolesWithPolicies = authContext.roles.filter(
+        (role): role is Role => role in options
+      );
+
+      // User must have at least one role with a declared policy
+      if (userRolesWithPolicies.length === 0) {
         res.status(403).json({
-          error: 'Action not permitted',
-          details: `Action '${options.action}' requires appropriate role`
+          error: 'Access denied',
+          details: 'No ABAC policy declared for user roles'
         });
         return;
       }
 
-      // ========================================
-      // 2. ENVIRONMENTAL ATTRIBUTE CHECK
-      // ========================================
-      // Evaluate ABAC policies against ALL roles the user has
-      const canBypassBusinessHours = evaluateAttribute(authContext.roles, 'canBypassBusinessHours');
+      // Evaluate each role's policy - access granted if ANY role permits
+      let lastDenialReason = 'Access denied';
 
-      if (options.checkBusinessHours) {
-        const now = getNow();
-        if (!isWithinBusinessHours(now) && !canBypassBusinessHours) {
-          res.status(403).json({ error: 'Operation not allowed outside business hours' });
+      for (const role of userRolesWithPolicies) {
+        const policy = options[role]!;
+
+        // Evaluate this role's specific policy
+        const result = await evaluateRolePolicy(policy, authContext, req, reportStore);
+
+        if (result.allowed) {
+          // This role's policy permits access - proceed
+          next();
           return;
+        }
+
+        // Track the denial reason
+        if (result.reason) {
+          lastDenialReason = result.reason;
         }
       }
 
-      // ========================================
-      // 3. RESOURCE ATTRIBUTE CHECK
-      // ========================================
-      const canBypassOwnership = evaluateAttribute(authContext.roles, 'canBypassOwnership');
-
-      if (options.checkOwnership && req.params.id) {
-        const report = await reportStore.getById(req.params.id);
-
-        if (!report) {
-          res.status(404).json({ error: 'Report not found' });
-          return;
-        }
-
-        // Check if user owns resource OR has a role that can bypass ownership
-        const isOwner = report.ownerId === authContext.sub;
-        if (!isOwner && !canBypassOwnership) {
-          res.status(403).json({ error: 'Not authorized to modify this resource' });
-          return;
-        }
-      }
-
-      // All ABAC checks passed
-      next();
+      // No role's policy permitted access
+      res.status(403).json({ error: lastDenialReason });
     };
   };
 }

@@ -60,12 +60,18 @@ app.get(
 );
 
 // POST /reports - create operation (write)
+// ABAC: Each role has its own policy declaration
 app.post(
   '/reports',
   authenticate,
   checkSession,
   rbac(['editor', 'admin']),
-  abac({ action: 'write', checkBusinessHours: true }),
+  abac({
+    // Editor policy: can write, must be in business hours, no ownership check (new resource)
+    editor: { action: 'write', checkOwnership: false, checkBusinessHours: true },
+    // Admin policy: can write, must be in business hours, no ownership check
+    admin: { action: 'write', checkOwnership: false, checkBusinessHours: true },
+  }),
   async (req, res) => {
     const report = await reportStore.create({
       ownerId: req.authContext!.sub,
@@ -76,12 +82,18 @@ app.post(
 );
 
 // POST /reports/:id/update - update operation (write, calls downstream)
+// ABAC: Each role has DIFFERENT policy parameters
 app.post(
   '/reports/:id/update',
   authenticate,
   checkSession,
   rbac(['editor', 'admin']),
-  abac({ action: 'write', checkOwnership: true, checkBusinessHours: true }),
+  abac({
+    // Editor policy: must own the resource AND be in business hours
+    editor: { action: 'write', checkOwnership: true, checkBusinessHours: true },
+    // Admin policy: can bypass ownership, but still must be in business hours
+    admin: { action: 'write', checkOwnership: false, checkBusinessHours: true },
+  }),
   async (req, res) => {
     const report = await reportStore.getById(req.params.id);
     if (!report) {
@@ -101,12 +113,16 @@ app.post(
 );
 
 // POST /admin/reindex - admin operation (calls downstream)
+// ABAC: Only admin role has a policy declared
 app.post(
   '/admin/reindex',
   authenticate,
   checkSession,
   rbac(['admin']),
-  abac({ action: 'admin', checkBusinessHours: true }),
+  abac({
+    // Only admin has a policy - other roles will be denied
+    admin: { action: 'admin', checkOwnership: false, checkBusinessHours: true },
+  }),
   async (req, res) => {
     const result = await egressClient.reindex(req.authContext!);
     if (!result.success) {
